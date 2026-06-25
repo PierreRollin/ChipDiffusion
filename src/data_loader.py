@@ -1,6 +1,16 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw"
+PROCESSED_DATA_DIR = PROJECT_ROOT / "data" / "processed"
+
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def download_market_data(tickers, start_date, end_date, output_path):
     data = yf.download(tickers, start=start_date, end=end_date)['Close']    # prix de clôture ajustés
@@ -57,5 +67,10 @@ all_tickers = commodities_and_macro + foundries_and_equipment + fabless_designer
 
 print("Nombres total de tickers : ", len(all_tickers))
 print ("Tickers : ", all_tickers)
-download_market_data(all_tickers, "2010-01-01", "2026-12-31", "data/raw/chip_chain_raw.csv")
-process_market_data("data/raw/chip_chain_raw.csv", "data/processed/prices_aligned.csv", "data/processed/returns_clean.csv")
+
+raw_csv = RAW_DATA_DIR / "chip_chain_raw.csv"
+processed_prices = PROCESSED_DATA_DIR / "chip_chain_prices.csv"
+processed_returns = PROCESSED_DATA_DIR / "chip_chain_returns.csv"
+
+download_market_data(all_tickers, "2010-01-01", "2026-12-31", raw_csv)
+process_market_data(raw_csv, processed_prices, processed_returns)
