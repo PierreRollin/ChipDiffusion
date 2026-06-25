@@ -2,3 +2,5 @@ numpy
 ipykernel
 yfinance
 pandas
+scipy
+matplotlib

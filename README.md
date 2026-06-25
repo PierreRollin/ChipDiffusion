@@ -85,3 +85,46 @@ Ce portefeuille couvert en Delta étant localement sans risque, il doit impérat
 $$\frac{\partial V}{\partial t} + \frac{1}{2}\sigma^2 S^2 \frac{\partial^2 V}{\partial S^2} + r S \frac{\partial V}{\partial S} - r V = 0$$
 
 La résolution de cette EDP avec les conditions aux limites adéquates (ex: $V(S, T) = \max(S - K, 0)$ pour un Call Européen) fournit la formule fermée de Black-Scholes. Elle permet d'évaluer le juste prix de l'option instantanément, contournant la lourdeur algorithmique des simulations Monte Carlo, à la stricte condition que l'hypothèse de volatilité constante soit respectée.
+
+### 1.4 Les Greeks : Métriques de Sensibilité et Gestion du Risque
+
+Le prix d'une option $V$ n'est pas statique ; c'est une surface multidimensionnelle qui réagit aux perturbations de l'environnement (Prix du sous-jacent, Temps, Volatilité, Taux). L'évaluation de ces sensibilités se fait via le calcul des dérivées partielles de la formule de Black-Scholes, appelées communément "Les Grecques".
+
+#### 1.4.1 Delta ($\Delta$) : L'Exposition Directionnelle
+Le Delta mesure la sensibilité du prix de l'option par rapport à une variation infinitésimale du prix de l'actif sous-jacent ($S$).
+$$\Delta = \frac{\partial V}{\partial S}$$
+*   **Pour un Call :** $\Delta_{Call} = \mathcal{N}(d_1) \in [0, 1]$. Si l'action monte de 1\$, l'option Call monte de $\Delta\$$.
+*   **Pour un Put :** $\Delta_{Put} = \mathcal{N}(d_1) - 1 \in [-1, 0]$.
+*   *Application Quant :* C'est la métrique fondamentale du "Delta-Hedging". Un portefeuille Delta-Neutre ($\sum \Delta_i = 0$) est immunisé contre les petits mouvements directionnels du marché.
+
+#### 1.4.2 Gamma ($\Gamma$) : La Convexité
+Le Gamma est la dérivée seconde du prix de l'option par rapport au prix du sous-jacent. C'est le taux de variation du Delta.
+$$\Gamma = \frac{\partial^2 V}{\partial S^2} = \frac{\partial \Delta}{\partial S} = \frac{\mathcal{N}'(d_1)}{S \sigma \sqrt{T}}$$
+*(où $\mathcal{N}'$ est la densité de la loi normale).*
+*   *Application Quant :* Le Gamma est maximal quand l'option est "At-the-Money" (ATM). Un Gamma positif signifie que le portefeuille gagne de l'argent de manière non-linéaire lors de mouvements violents (la volatilité est l'amie du Gamma). Une option deep ITM ou OTM est proche de 0. C'est le moteur de l'arbitrage stochastique.
+
+#### 1.4.3 Vega ($\nu$) : L'Exposition à la Volatilité
+Bien que ce ne soit pas une lettre grecque officielle, Vega mesure la sensibilité du prix de l'option face à un changement de la volatilité implicite ($\sigma$).
+$$\nu = \frac{\partial V}{\partial \sigma} = S \sqrt{T} \mathcal{N}'(d_1)$$
+*   *Application Quant :* Vega est strictement positif pour les Calls et les Puts. Dans notre stratégie `ChipDiffusion`, si le LSTM prédit une hausse massive de la volatilité sur NVDA, nous construirons un portefeuille avec un **Vega fortement positif** (achat d'options) tout en gardant un **Delta neutre** pour ignorer la direction du prix.
+
+#### 1.4.4 Theta ($\Theta$) : La Décroissance Temporelle (Time Decay)
+Theta mesure la perte de valeur de l'option à mesure que le temps passe (dérivée par rapport au temps $t$, ou inversement par rapport à l'échéance $T$).
+$$\Theta = -\frac{\partial V}{\partial T} = -\frac{S \mathcal{N}'(d_1) \sigma}{2 \sqrt{T}} - r K e^{-rT} \mathcal{N}(d_2)$$
+*   *Application Quant :* Theta est généralement négatif pour un acheteur d'option. C'est le "loyer" payé chaque jour pour bénéficier du Gamma. La relation fondamentale de Black-Scholes sans risque se résume par le compromis Gamma-Theta : on paie du Theta (temps) pour détenir du Gamma (convexité/mouvement).
+
+### 1.5 Inversion du Modèle : La Volatilité Implicite et la méthode de Newton-Raphson
+
+Dans la pratique des marchés financiers, le modèle de Black-Scholes n'est pas utilisé pour "prédire" le prix d'une option. Le prix est dicté par la loi de l'offre et de la demande dans le carnet d'ordres. L'inconnue de l'équation devient alors la volatilité $\sigma$. 
+
+La **Volatilité Implicite (IV)** est la valeur de $\sigma$ qui, injectée dans l'équation de Black-Scholes, permet de retrouver exactement le prix observé sur le marché. Elle représente le consensus des acteurs du marché sur l'incertitude future.
+
+L'équation de Black-Scholes n'étant pas inversible analytiquement (la variable $\sigma$ étant emprisonnée dans l'intégrale de la fonction de répartition $\mathcal{N}$), nous devons utiliser un algorithme d'optimisation numérique pour trouver la racine de la fonction :
+$$f(\sigma) = Prix_{BSM}(\sigma) - Prix_{Marché} = 0$$
+
+**L'algorithme de Newton-Raphson :**
+Grâce au calcul des Grecques, nous possédons la dérivée exacte du prix par rapport à la volatilité : le **Vega** ($\nu$). Le Vega est le gradient parfait pour notre descente algorithmique.
+La mise à jour itérative de la volatilité s'écrit donc :
+$$\sigma_{n+1} = \sigma_n - \frac{Prix_{BSM}(\sigma_n) - Prix_{Marché}}{\nu(\sigma_n)}$$
+
+L'algorithme converge généralement en moins de 5 itérations vers la volatilité implicite avec une précision de $10^{-5}$, permettant d'extraire le "niveau de peur" pour chaque actif de la chaîne des semi-conducteurs.
