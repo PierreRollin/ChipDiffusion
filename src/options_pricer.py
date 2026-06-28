@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.stats import norm
+from scipy.optimize import brentq
 
 class BlackScholesPricer:
     """
@@ -83,53 +84,54 @@ class BlackScholesPricer:
         return theta_annual / 365.0
     
 
+
+
     @classmethod
-    def implied_volatility(cls, market_price: float, S0: float, K: float, T: float, r: float, option_type: str = 'call', tol: float = 1e-5, max_iter: int = 100) -> float:
-        """
-        Calcule la volatilité implicite via l'algorithme de Newton-Raphson.
-        Utilise @classmethod car on instancie des pricers temporaires pour converger sans modifier l'instance actuelle.
-        """
-        # Si l'option est expirée, la volatilité implicite n'a plus de sens
+    def implied_volatility(cls, market_price: float, S0: float, K: float, T: float, r: float, 
+                            option_type: str = 'call', tol: float = 1e-5, max_iter: int = 100) -> float:
+    
         if T <= 0:
             return 0.0
 
-        # Point de départ (Initial guess) : 20% de volatilité
-        sigma = 0.20 
+        # --- GARDE-FOU 1 : prix intrinsèque ---
+        # Si le prix de marché est inférieur ou égal à la valeur intrinsèque,
+        # il n'existe aucune volatilité implicite réelle (option pricée à sa valeur plancher)
+        intrinsic = max(S0 - K, 0) if option_type == 'call' else max(K - S0, 0)
+        discount = K * np.exp(-r * T)
         
-        for i in range(max_iter):
-            # 1. On crée un pricer temporaire avec le sigma actuel
+        # Borne inférieure théorique (parité call-put / no-arbitrage)
+        lower_bound = max(S0 - discount, 0) if option_type == 'call' else max(discount - S0, 0)
+        
+        if market_price <= lower_bound + 1e-4:
+            return np.nan  # Pas de solution possible
+
+        # --- PHASE 1 : Newton-Raphson (rapide) ---
+        sigma = 0.20
+        for _ in range(max_iter):
             temp_pricer = cls(S0, K, T, r, sigma)
-            
-            # 2. On calcule le prix théorique avec ce sigma
-            if option_type == 'call':
-                price_calculated = temp_pricer.call_price()
-            else:
-                price_calculated = temp_pricer.put_price()
-                
-            # 3. L'erreur par rapport au marché
-            diff = price_calculated - market_price
-            
-            # Si l'erreur est plus petite que la tolérance, on a trouvé !
+            price_calc = temp_pricer.call_price() if option_type == 'call' else temp_pricer.put_price()
+            diff = price_calc - market_price
+
             if abs(diff) < tol:
                 return sigma
-                
-            # 4. On récupère le Vega (la dérivée)
-            # Attention: dans notre classe, vega() renvoie le changement pour 1% (divisé par 100)
-            # Pour Newton-Raphson (maths pures), il nous faut le vrai Vega brut (la dérivée partielle exacte)
-            # Donc on le remultiplie par 100
+
             vega_exact = temp_pricer.vega() * 100.0
-            
-            # Sécurité pour éviter la division par zéro si Vega est nul (option très OTM/ITM)
             if vega_exact < 1e-8:
-                # Si le gradient est nul, on retourne NaN car l'algo ne peut plus converger
-                return np.nan 
-                
-            # 5. La mise à jour de Newton-Raphson
+                break  # Newton bloqué → on passe à Brentq
+
             sigma = sigma - (diff / vega_exact)
-            
-            # Sécurité : la volatilité ne peut pas être négative
             if sigma <= 0.0:
-                sigma = 0.001
-                
-        # Si on dépasse max_iter sans converger
-        return np.nan
+                sigma = 1e-4
+
+        # --- PHASE 2 : Brentq (robuste) comme fallback ---
+        try:
+            def objective(s):
+                p = cls(S0, K, T, r, s)
+                return (p.call_price() if option_type == 'call' else p.put_price()) - market_price
+
+            # On cherche dans [0.1%, 500%] de volatilité
+            iv = brentq(objective, 1e-3, 5.0, xtol=tol, maxiter=500)
+            return iv
+        except ValueError:
+            # Brentq échoue si le prix marché est hors des bornes théoriques sur [1e-3, 5.0]
+            return np.nan
