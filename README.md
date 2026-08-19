@@ -1,5 +1,40 @@
 # ChipDiffusion : Arbitrage de Volatilité et Pricing Stochastique (Supply Chain Semi-conducteurs)
 
+## Résultats clés
+
+| Module | Résultat | Détail |
+|---|---|---|
+| Monte Carlo GBM | Erreur vs théorie < 0.5% | 10 000 trajectoires, N=252 |
+| BSM Pricer | MAE IV vs Yahoo = 5.0% | Écart structurel (dividendes) |
+| LSTM VRP Engine | Gain vs baseline = +0.38% | p=0.006, 9/10 seeds positives |
+| Backtest historique | Win Rate 71.4%, Sharpe 0.95 | 21 trades, 2023-2026 |
+| vs Baseline systématique | +27% PnL/trade | 21 trades filtrés vs 31 |
+| Heston | Kurtosis > 3, Q5% -9$ vs BSM | ρ=-0.7, condition Feller ✓ |
+
+## Architecture
+
+```
+Data (yfinance) 
+    │
+    ├── Notebook 01 ── Monte Carlo GBM (validation moteur stochastique)
+    ├── Notebook 02 ── BSM Pricer + Greeks + IV (Newton-Raphson + Brentq)
+    ├── Notebook 03 ── Volatility Surface NVDA (skew empirique)
+    │
+    ├── Notebook 04 ── Vol Arb théorique (Straddle + Delta Hedging simulé)
+    ├── Notebook 05 ── ML Engine (HMM Walk-Forward + LSTM CNN1D)
+    │                  → Signal exporté : signal_vol_arb.csv
+    ├── Notebook 06 ── Backtest historique (prix réels NVDA 2023-2026)
+    ├── Notebook 07 ── Heston Monte Carlo (au-delà de BSM)
+    │
+    ├── src/           ── Modules Python réutilisables
+    │   ├── options_pricer.py  (BSM + Greeks + IV)
+    │   ├── backtester.py      (Delta Hedging discret + stop-loss)
+    │   └── stochastic.py      (Monte Carlo GBM)
+    │
+    ├── api/           ── FastAPI (4 routes)
+    └── streamlit_app.py ── Interface interactive
+```
+
 ## 1. Fondations Mathématiques : Du Temps Discret au Temps Continu
 
 Alors que les modèles prédictifs (LSTMs, HMMs) opèrent en temps discret pour anticiper les rendements futurs ($\mu$), l'évaluation de produits dérivés (Pricing d'options) exige un passage en temps continu. Sous la probabilité risque-neutre ($\mathbb{Q}$), l'espérance de rendement de l'actif devient non pertinente. La variable centrale du modèle devient la **Volatilité ($\sigma$)**.
@@ -84,7 +119,7 @@ Ce portefeuille couvert en Delta étant localement sans risque, il doit impérat
 
 $$\frac{\partial V}{\partial t} + \frac{1}{2}\sigma^2 S^2 \frac{\partial^2 V}{\partial S^2} + r S \frac{\partial V}{\partial S} - r V = 0$$
 
-La résolution de cette EDP avec les conditions aux limites adéquates (ex: $V(S, T) = \max(S - K, 0)$ pour un Call Européen) fournit la formule fermée de Black-Scholes. Elle permet d'évaluer le juste prix de l'option instantanément, contournant la lourdeur algorithmique des simulations Monte Carlo, à la stricte condition que l'hypothèse de volatilité constante soit respectée.
+La résolution de cette EDP avec les conditions aux limites adéquates (ex: $V(S, T) = \max(S - K, 0)$ pour un Call Européen) fournit la formule fermée de Black-Scholes. Elle permet de fournir le prix de l'option en temps O(1) via une formule analytique exacte, sous la stricte hypothèse de volatilité constante — hypothèse que le Notebook 03 réfute empiriquement.
 
 ### 1.4 Les Greeks : Métriques de Sensibilité et Gestion du Risque
 
@@ -129,6 +164,15 @@ $$\sigma_{n+1} = \sigma_n - \frac{Prix_{BSM}(\sigma_n) - Prix_{Marché}}{\nu(\si
 
 L'algorithme converge généralement en moins de 5 itérations vers la volatilité implicite avec une précision de $10^{-5}$, permettant d'extraire le "niveau de peur" pour chaque actif de la chaîne des semi-conducteurs.
 
+**Robustesse numérique :** L'algorithme Newton-Raphson peut diverger 
+lorsque le Vega est quasi-nul (options très OTM ou proches de l'expiration). 
+Une garde-fou à deux niveaux a été implémentée :
+1. Vérification de la borne inférieure théorique (lower bound de no-arbitrage)
+2. Fallback automatique vers l'algorithme de Brentq (méthode de bisection 
+   robuste sur l'intervalle [0.1%, 500%]) si Newton-Raphson ne converge pas
+Cette approche hybride combine la rapidité de Newton (convergence quadratique 
+en ~5 itérations) avec la robustesse garantie de Brentq.
+
 ## 2. Le Choc de Réalité Empirique : La Surface de Volatilité
 
 L'un des postulats fondateurs du modèle de Black-Scholes est que la volatilité ($\sigma$) du sous-jacent est constante. Par conséquent, toutes les options sur un même actif devraient afficher la même Volatilité Implicite (IV), quels que soient leur Strike ($K$) ou leur Maturité ($T$).
@@ -153,21 +197,79 @@ C'est l'écart entre la théorie de Black-Scholes et la réalité du marché qui
 
 Structurellement, il est démontré que $\text{IV} > \text{RV}$ la majorité du temps. Cette différence s'appelle la **Volatility Risk Premium (VRP)**. C'est une prime d'assurance payée par les acheteurs d'options aux "Market Makers" pour le transfert du risque.
 
-### 3.2 L'Équation Fondamentale du PnL (Gamma-Theta Trade-off)
-Comment monétiser la différence entre IV et RV sans s'exposer aux variations de prix du sous-jacent ? La solution réside dans le **Delta-Hedging** dynamique.
-Considérons un portefeuille $\Pi$ contenant une option vendue, couverte en permanence par l'achat de $\Delta$ actions. En appliquant le lemme d'Itô sur ce portefeuille, la variation du Profit & Loss (PnL) sur un instant $dt$ ne dépend plus du rendement de l'action, mais uniquement de sa variance :
+### 3.2 Dérivation complète de l'équation de PnL du Delta-Hedging
 
-$$dPnL \approx \frac{1}{2} \Gamma S^2 (\sigma_{imp}^2 - \sigma_{real}^2) dt$$
+Considérons un portefeuille $\Pi = -V + \Delta S$ (option vendue, 
+$\Delta$ actions achetées en couverture). Sur un intervalle $dt$ :
 
-Où :
-*   $\Gamma$ est le Gamma de l'option (sa convexité).
-*   $\sigma_{imp}$ est la volatilité implicite à laquelle l'option a été tradée.
-*   $\sigma_{real}$ est la volatilité qui se matérialise réellement sur l'intervalle $dt$.
+$$d\Pi = -dV + \Delta \, dS$$
 
-**Conclusion stochastique :** Si un algorithme prédictif (ex: LSTM + HMM) parvient à anticiper que la volatilité qui va se réaliser ($\sigma_{real}$) sera significativement inférieure à la volatilité actuellement "pricelée" par le marché ($\sigma_{imp}$), il est mathématiquement prouvé qu'un portefeuille Delta-Neutre générera un profit certain, indépendamment de la hausse ou de la baisse de l'action.
+Par le Lemme d'Itô appliqué à $V(S, t)$ :
+
+$$dV = \frac{\partial V}{\partial t} dt + \frac{\partial V}{\partial S} dS 
++ \frac{1}{2} \frac{\partial^2 V}{\partial S^2} (dS)^2$$
+
+En substituant $(dS)^2 = \sigma_{real}^2 S^2 \, dt$ (algèbre d'Itô) 
+et $\Delta = \frac{\partial V}{\partial S}$ :
+
+$$d\Pi = -\frac{\partial V}{\partial t} dt - \frac{1}{2} \Gamma \sigma_{real}^2 S^2 \, dt$$
+
+Or l'EDP de Black-Scholes nous donne :
+
+$$\frac{\partial V}{\partial t} = -\frac{1}{2} \Gamma \sigma_{imp}^2 S^2 - rS\Delta + rV$$
+
+En substituant (et en négligeant les termes de financement pour la clarté) :
+
+$$\boxed{dPnL \approx \frac{1}{2} \Gamma S^2 (\sigma_{imp}^2 - \sigma_{real}^2) \, dt}$$
+
+**Interprétation économique :** Si $\sigma_{imp} > \sigma_{real}$ (IV > RV, 
+VRP positif), chaque instant $dt$ génère un profit proportionnel au Gamma 
+de l'option et au carré de l'écart de volatilité. C'est la justification 
+mathématique exacte de la stratégie Short Straddle Delta-Hedgé : 
+on encaisse la différence entre la volatilité payée par le marché 
+(IV) et celle qui se réalise (RV), indépendamment de la direction du prix.
+
+**Note critique :** Cette équation suppose un rebalancement en temps 
+continu. En pratique, un rebalancement discret (quotidien dans notre 
+backtest) introduit un risque résiduel de Gamma non couvert, 
+proportionnel au carré du mouvement journalier de l'action.
 
 ### 3.3 L'Instrument Stratégique : Le Straddle ATM
 Pour maximiser l'exposition à la volatilité tout en annulant l'exposition directionnelle initiale, l'instrument roi est le **Straddle At-The-Money (ATM)**.
 Il consiste à acheter (ou vendre) simultanément un Call et un Put ayant le même Strike $K \approx S_0$ et la même maturité $T$.
 *   $\Delta_{Straddle} = \Delta_{Call} + \Delta_{Put} \approx 0.5 + (-0.5) = 0$ (Risque directionnel nul).
 *   $\nu_{Straddle} = \nu_{Call} + \nu_{Put}$ (Exposition maximale à la Volatilité, le Vega étant à son apogée à la monnaie).
+
+## 4. Au-delà de Black-Scholes : Le Modèle de Heston (Volatilité Stochastique)
+
+L'hypothèse de volatilité constante de BSM est empiriquement réfutée 
+par l'existence du Volatility Skew (Notebook 03). Le modèle de Heston 
+(1993) résout ce problème en modélisant la variance comme un second 
+processus stochastique :
+
+$$dS_t = r S_t \, dt + \sqrt{v_t} \, S_t \, dW_t^1$$
+$$dv_t = \kappa(\theta - v_t) \, dt + \xi \sqrt{v_t} \, dW_t^2$$
+$$\text{avec} \quad dW_t^1 \cdot dW_t^2 = \rho \, dt$$
+
+### 4.1 Condition de Feller
+La condition $2\kappa\theta > \xi^2$ garantit que le processus CIR 
+de la variance reste strictement positif. Vérifiée dans notre 
+implémentation : $2 \times 3.0 \times 0.12 = 0.72 > 0.25 = 0.5^2$.
+
+### 4.2 Génération des Browniens Corrélés
+Les deux processus $W^1$ et $W^2$ ne sont pas indépendants. 
+On les génère par décomposition de Cholesky :
+$$W^2 = \rho \, W^1 + \sqrt{1 - \rho^2} \, Z \quad \text{avec } Z \perp W^1$$
+
+### 4.3 Schéma Full Truncation (Lord et al., 2010)
+La discrétisation Euler-Maruyama peut produire $v_t < 0$ à cause 
+du bruit numérique. Le schéma "full truncation" remplace $v_t$ 
+par $\max(v_t, 0)$ partout, garantissant la positivité sans biais 
+significatif sur le prix.
+
+### 4.4 Résultats sur NVDA (paramètres illustratifs)
+Le skew monotone décroissant généré par Heston (IV de 37.4% à 0.80 
+moneyness → 31.3% à 1.20 moneyness) reproduit qualitativement le 
+profil observé dans le Notebook 03 — confirmant que la corrélation 
+négative $\rho = -0.7$ (leverage effect) est le mécanisme générateur 
+du skew equity.

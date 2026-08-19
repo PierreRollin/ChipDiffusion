@@ -4,3 +4,13 @@ yfinance
 pandas
 scipy
 matplotlib
+hmmlearn
+tensorflow
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.0.0
+# pip install streamlit plotly --break-system-packages
+# yfinance>=0.2.40
+# pandas>=2.0.0
+# numpy>=1.26.0
+# scipy>=1.12.0
