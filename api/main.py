@@ -5,24 +5,26 @@ from api.routers import pricer, vol_surface, signal, backtest
 app = FastAPI(
     title="ChipDiffusion API",
     description="""
-    API de pricing d'options et de vol arbitrage sur la supply chain semi-conducteurs.
-    
-    ## Modules disponibles
-    
-    - **/pricer** — Black-Scholes : prix, Greeks, volatilité implicite
-    - **/vol_surface** — Smile de volatilité implicite (données yfinance temps réel)
-    - **/signal** — Signal LSTM+HMM de vol arbitrage (dernier état connu)
-    - **/backtest** — Métriques du backtest historique (notebook 06)
-    
-    ## Stack technique
-    
-    Black-Scholes (analytique) | HMM Walk-Forward | LSTM CNN1D | Delta Hedging discret
-    
-    ## Limites
-    
-    Les données options proviennent de Yahoo Finance (hors heures de marché, 
-    pas d'IV historique). Le signal LSTM+HMM est statique — il nécessite 
-    un re-run du notebook 05 pour être mis à jour.
+    Options pricing and volatility arbitrage API 
+    for the semiconductor supply chain.
+
+    ## Available Modules
+
+    - **/pricer** — Black-Scholes: price, Greeks, implied volatility
+    - **/vol_surface** — Implied volatility smile (live yfinance data)
+    - **/signal** — LSTM+HMM vol arbitrage signal (last known state)
+    - **/backtest** — Historical backtest metrics (notebook 06)
+
+    ## Technical Stack
+
+    Black-Scholes (analytical) | HMM Walk-Forward | 
+    LSTM CNN1D | Discrete Delta Hedging
+
+    ## Known Limitations
+
+    Options data from Yahoo Finance (off-market hours, 
+    no historical IV). LSTM+HMM signal is static — 
+    requires re-running notebook 05 to update.
     """,
     version="1.0.0",
     contact={"name": "ChipDiffusion Project"}
@@ -47,7 +49,14 @@ def root():
         "status": "ok",
         "project": "ChipDiffusion",
         "version": "1.0.0",
-        "routes": ["/pricer", "/vol_surface", "/signal", "/backtest/summary", "/backtest/trades", "/docs"]
+        "routes": {
+            "pricer": ["/pricer/", "/pricer/implied_vol"],
+            "vol_surface": ["/vol_surface/"],
+            "signal": ["/signal/", "/signal/history"],
+            "backtest": ["/backtest/summary", "/backtest/trades"],
+            "health": ["/", "/health"],
+            "docs": "/docs"
+        }
     }
 
 
